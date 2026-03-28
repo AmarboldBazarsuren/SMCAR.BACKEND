@@ -2,8 +2,7 @@
  * SMCar.mn Vehicle Controller (Public)
  * Файл: backend/src/controllers/vehicleController.js
  * Үүрэг: Нийтийн хэрэглэгчдэд зориулсан машин харуулах API
- * Encar API + Admin гараар нэмсэн машинуудыг нэгтгэж буцаана
- * Routes: /api/vehicles
+ * encar.mn + encar.com API-г шууд ашиглана (Carapis байхгүй)
  */
 
 const encarService = require('../services/encarService');
@@ -13,37 +12,40 @@ const Banner = require('../models/Banner');
 const PricingConfig = require('../models/PricingConfig');
 
 // ============================================================
-// GET /api/vehicles - Encar API-аас машинуудын жагсаалт
+// GET /api/vehicles - Машинуудын жагсаалт
 // ============================================================
 const getEncarVehicles = async (req, res) => {
   try {
     const {
-      brand, model,
+      manufacturer,
+      modelGroup,
       year_min, year_max,
       price_min, price_max,
-      location,
+      fuelType,
       limit = 20,
       offset = 0,
     } = req.query;
 
-    console.log(`🔍 Encar машин хайлт: brand=${brand}, model=${model}, limit=${limit}`);
+    console.log(`🔍 Машин хайлт: manufacturer=${manufacturer}, limit=${limit}, offset=${offset}`);
 
     const data = await encarService.getVehicles({
-      brand, model, year_min, year_max,
-      price_min, price_max, location,
+      manufacturer, modelGroup,
+      year_min, year_max,
+      price_min, price_max,
+      fuelType,
       limit: Number(limit),
       offset: Number(offset),
     });
 
-    // Валютын ханш авч үнийг MNT-д хөрвүүлэх
+    // Валютын ханш авах
     const pricingConfig = await PricingConfig.getActive();
-    const { wonToMNT } = pricingConfig;
+    const wonToMNT = pricingConfig.wonToMNT;
 
-    const vehicles = (data.data?.vehicles || []).map(v => ({
+    // Үнийг MNT-д хөрвүүлэх
+    const vehicles = (data.data?.vehicles || []).map((v) => ({
       ...v,
-      priceMNT: v.price ? Math.round(v.price * wonToMNT) : null,
+      priceMNT: v.priceKRW ? Math.round(v.priceKRW * wonToMNT) : null,
       wonToMNT,
-      source: 'encar',
     }));
 
     res.status(200).json({
@@ -60,20 +62,20 @@ const getEncarVehicles = async (req, res) => {
     console.error(`❌ GetEncarVehicles алдаа: ${error.message}`);
     res.status(500).json({
       success: false,
-      message: 'Encar машинуудыг татаж чадсангүй. Дараа дахин оролдоорой.',
+      message: 'Машинуудыг татаж чадсангүй. Дараа дахин оролдоорой.',
       detail: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 };
 
 // ============================================================
-// GET /api/vehicles/encar/:id - Encar машины дэлгэрэнгүй + татвар тооцоолол
+// GET /api/vehicles/encar/:id - Машины дэлгэрэнгүй + татвар тооцоолол
 // ============================================================
 const getEncarVehicleDetail = async (req, res) => {
   const { id } = req.params;
 
   try {
-    console.log(`🔍 Encar машин дэлгэрэнгүй + татвар: ID ${id}`);
+    console.log(`🔍 Машин дэлгэрэнгүй + татвар: ID ${id}`);
 
     const data = await encarService.getVehicleById(id);
     const vehicle = data.data;
@@ -84,13 +86,12 @@ const getEncarVehicleDetail = async (req, res) => {
 
     // Татвар тооцоолох
     let pricing = null;
-    if (vehicle.price && vehicle.year && vehicle.engine_size) {
-      const engineCC = parseInt(vehicle.engine_size?.replace(/[^0-9]/g, '')) || 2000;
+    if (vehicle.priceKRW && vehicle.year && vehicle.displacement) {
       try {
         pricing = await taxService.calculateTotalPrice({
-          priceKRW: vehicle.price,
+          priceKRW: vehicle.priceKRW,
           year: vehicle.year,
-          engineCC,
+          engineCC: vehicle.displacement,
         });
       } catch (taxErr) {
         console.warn(`⚠️  Татвар тооцоолоход алдаа: ${taxErr.message}`);
@@ -214,6 +215,19 @@ const getModels = async (req, res) => {
 };
 
 // ============================================================
+// GET /api/exchange-rate - Валютын ханш
+// ============================================================
+const getExchangeRate = async (req, res) => {
+  try {
+    const data = await encarService.getExchangeRate();
+    res.status(200).json({ success: true, data: data.data });
+  } catch (error) {
+    console.error(`❌ GetExchangeRate алдаа: ${error.message}`);
+    res.status(500).json({ success: false, message: 'Ханш татаж чадсангүй' });
+  }
+};
+
+// ============================================================
 // POST /api/vehicles/calculate-price - Үнэ тооцоолох
 // ============================================================
 const calculatePrice = async (req, res) => {
@@ -254,7 +268,7 @@ const getActiveBanners = async (req, res) => {
 };
 
 // ============================================================
-// GET /api/health - API ажиллаж байгаа эсэхийг шалгах
+// GET /api/health - Системийн байдал шалгах
 // ============================================================
 const healthCheck = async (req, res) => {
   console.log('🏥 Health check хийгдлээ');
@@ -275,6 +289,7 @@ module.exports = {
   getManualVehicleDetail,
   getBrands,
   getModels,
+  getExchangeRate,
   calculatePrice,
   getActiveBanners,
   healthCheck,

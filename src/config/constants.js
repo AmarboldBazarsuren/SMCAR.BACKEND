@@ -66,12 +66,11 @@ const TAX_FORMULA = {
 // ============================================================
 const CARAPIS = {
   BASE_URL: 'https://api.carapis.com',
-  ENCAR_VEHICLES_ENDPOINT: '/encar/vehicles',
-  ENCAR_VEHICLE_DETAIL_ENDPOINT: '/encar/vehicle',
-  ENCAR_BRANDS_ENDPOINT: '/encar/brands',
-  ENCAR_MODELS_ENDPOINT: '/encar/models',
-  ENCAR_MARKET_STATS_ENDPOINT: '/encar/market-stats',
-  // Free plan: 60 req/min, 1000 req/hr, 10000 req/day
+  ENCAR_VEHICLES_ENDPOINT: '/parsers/encar/listings',        // ← өөрчлөгдлөө
+  ENCAR_VEHICLE_DETAIL_ENDPOINT: '/parsers/encar/vehicle',   // ← өөрчлөгдлөө
+  ENCAR_BRANDS_ENDPOINT: '/parsers/encar/brands',            // ← өөрчлөгдлөө
+  ENCAR_MODELS_ENDPOINT: '/parsers/encar/models',            // ← өөрчлөгдлөө
+  ENCAR_MARKET_STATS_ENDPOINT: '/parsers/encar/market-stats',// ← өөрчлөгдлөө
   DEFAULT_LIMIT: 20,
   MAX_LIMIT: 100,
 };

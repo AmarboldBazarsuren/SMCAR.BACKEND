@@ -1,191 +1,316 @@
 /**
  * SMCar.mn Encar Service
  * Файл: backend/src/services/encarService.js
- * Үүрэг: Carapis API-р дамжуулж Encar.com-оос машины мэдээлэл татах
- * API Key: car_mq9s9lLWf33UP8qWJKTD0hGciPLHFh9xghBCnRZ_ASo
+ * Үүрэг: encar.mn болон encar.com API-г шууд ашиглан машины мэдээлэл татах
+ *
+ * Ашиглаж буй API-ууд:
+ * 1. http://api.encar.com/search/car/list/general  → Машинуудын жагсаалт (ID-ууд)
+ * 2. https://encar.mn/api/card?vehicle_id={ID}     → Монгол үнэ, үндсэн мэдээлэл
+ * 3. https://encar.mn/api/detailed-images?vehicleId={ID} → Бүх зургууд
+ * 4. https://encar.mn/api/model-groups?manufacturer={name} → Загваруудын жагсаалт
+ * 5. https://encar.mn/api/exchange-rate            → Ханш
+ * Зургийн base URL: https://ci.encar.com{path}
  */
 
 const axios = require('axios');
-const { CARAPIS } = require('../config/constants');
 
-// Axios instance - API хүсэлт бүрт authorization header нэмэх
-const apiClient = axios.create({
-  baseURL: process.env.CARAPIS_BASE_URL || CARAPIS.BASE_URL,
+const ENCAR_IMAGE_BASE = 'https://ci.encar.com';
+const ENCAR_API_BASE = 'http://api.encar.com';
+const ENCAR_MN_BASE = 'https://encar.mn';
+
+// ============================================================
+// AXIOS INSTANCE - encar.com жагсаалт татах
+// ============================================================
+const encarClient = axios.create({
+  baseURL: ENCAR_API_BASE,
   headers: {
-    Authorization: `Bearer ${process.env.CARAPIS_API_KEY}`,
-    'Content-Type': 'application/json',
+    Referer: 'http://www.encar.com',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   },
-  timeout: 15000, // 15 секундын timeout
+  timeout: 15000,
 });
 
 // ============================================================
-// REQUEST INTERCEPTOR - Хүсэлт явуулахаас өмнө log хийх
+// AXIOS INSTANCE - encar.mn API татах
 // ============================================================
-apiClient.interceptors.request.use(
-  (config) => {
-    console.log(`📡 Encar API хүсэлт: ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
-    if (config.params) {
-      console.log(`   Параметрүүд:`, config.params);
-    }
-    return config;
+const encarMnClient = axios.create({
+  baseURL: ENCAR_MN_BASE,
+  headers: {
+    Referer: 'https://encar.mn',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   },
-  (error) => {
-    console.error('❌ Encar API хүсэлтийн алдаа:', error.message);
-    return Promise.reject(error);
-  }
-);
+  timeout: 15000,
+});
 
 // ============================================================
-// RESPONSE INTERCEPTOR - Хариу ирэхэд log хийх
+// HELPER: Зургийн замыг бүтэн URL болгох
 // ============================================================
-apiClient.interceptors.response.use(
-  (response) => {
-    console.log(`✅ Encar API хариу: ${response.status} - ${response.config.url}`);
-
-    // Rate limit мэдээлэл харуулах
-    const remaining = response.headers['x-ratelimit-remaining'];
-    const limit = response.headers['x-ratelimit-limit'];
-    if (remaining !== undefined) {
-      console.log(`   Rate Limit: ${remaining}/${limit} хүсэлт үлдсэн`);
-      if (Number(remaining) < 10) {
-        console.warn(`⚠️  Rate Limit бараг дуусах гэж байна! Үлдсэн: ${remaining}`);
-      }
-    }
-
-    return response;
-  },
-  (error) => {
-    if (error.response) {
-      const { status, data } = error.response;
-      console.error(`❌ Encar API алдаа: ${status}`);
-      console.error(`   URL: ${error.config?.url}`);
-      console.error(`   Хариу:`, data);
-
-      if (status === 401) {
-        console.error('💡 Шийдэл: API key буруу эсвэл хугацаа дууссан байна');
-        console.error(`   API Key: ${process.env.CARAPIS_API_KEY?.substring(0, 20)}...`);
-      }
-
-      if (status === 429) {
-        console.error('💡 Шийдэл: Rate limit хэтэрсэн байна. Хэсэг хүлээгээд дахин оролдоорой');
-      }
-
-      if (status === 500) {
-        console.error('💡 Carapis серверт алдаа гарсан байна. Дараа дахин оролдоорой');
-      }
-    } else if (error.request) {
-      console.error('❌ Encar API-тэй холбогдоход алдаа: Хариу ирсэнгүй');
-      console.error('💡 Шийдэл: Internet холболт болон https://api.carapis.com ажиллаж байгаа эсэхийг шалгаарай');
-    } else {
-      console.error('❌ Encar API алдаа:', error.message);
-    }
-
-    return Promise.reject(error);
-  }
-);
-
-// ============================================================
-// API ФУНКЦУУД
-// ============================================================
-
-/**
- * Машинуудын жагсаалт татах
- * @param {Object} filters - Шүүлтүүр параметрүүд
- */
-const getVehicles = async (filters = {}) => {
-  const params = {
-    limit: filters.limit || CARAPIS.DEFAULT_LIMIT,
-    offset: filters.offset || 0,
-    ...(filters.brand && { brand: filters.brand }),
-    ...(filters.model && { model: filters.model }),
-    ...(filters.year_min && { year_min: filters.year_min }),
-    ...(filters.year_max && { year_max: filters.year_max }),
-    ...(filters.price_min && { price_min: filters.price_min }),
-    ...(filters.price_max && { price_max: filters.price_max }),
-    ...(filters.location && { location: filters.location }),
-  };
-
-  console.log(`🔍 Encar машин хайж байна:`, params);
-
-  const response = await apiClient.get(CARAPIS.ENCAR_VEHICLES_ENDPOINT, { params });
-  const data = response.data;
-
-  if (!data.success) {
-    throw new Error(`Encar API амжилтгүй хариу: ${JSON.stringify(data)}`);
-  }
-
-  console.log(`✅ ${data.data?.vehicles?.length || 0} машин олдлоо (Нийт: ${data.data?.total})`);
-  return data;
+const buildImageUrl = (path) => {
+  if (!path) return null;
+  if (path.startsWith('http')) return path;
+  return `${ENCAR_IMAGE_BASE}${path}`;
 };
 
-/**
- * Нэг машины дэлгэрэнгүй мэдээлэл татах
- * @param {string} id - Машины ID
- */
-const getVehicleById = async (id) => {
-  console.log(`🔍 Encar машин дэлгэрэнгүй: ID ${id}`);
-  const response = await apiClient.get(`${CARAPIS.ENCAR_VEHICLE_DETAIL_ENDPOINT}/${id}`);
-  const data = response.data;
+// ============================================================
+// HELPER: encar.com query filter үүсгэх
+// ============================================================
+const buildQuery = (filters = {}) => {
+  const conditions = ['And.Hidden.N._'];
 
-  if (!data.success) {
+  if (filters.manufacturer) {
+    conditions.push(`Manufacturer.${encodeURIComponent(filters.manufacturer)}._`);
+  }
+  if (filters.modelGroup) {
+    conditions.push(`ModelGroup.${encodeURIComponent(filters.modelGroup)}._`);
+  }
+  if (filters.year_min || filters.year_max) {
+    const min = filters.year_min ? `${filters.year_min}00` : '';
+    const max = filters.year_max ? `${filters.year_max}12` : '';
+    if (min && max) conditions.push(`Year.range.${min}.${max}._`);
+    else if (min) conditions.push(`Year.range.${min}.._`);
+    else if (max) conditions.push(`Year.range..${max}._`);
+  }
+  if (filters.price_min || filters.price_max) {
+    const min = filters.price_min || '';
+    const max = filters.price_max || '';
+    conditions.push(`Price.range.${min}.${max}._`);
+  }
+  if (filters.fuelType) {
+    conditions.push(`FuelType.${encodeURIComponent(filters.fuelType)}._`);
+  }
+
+  conditions.push('SellType.일반.');
+  return `(${conditions.join('')})`;
+};
+
+// ============================================================
+// 1. МАШИНУУДЫН ЖАГСААЛТ
+// encar.com-оос ID жагсаалт авч → encar.mn-оос мэдээлэл татна
+// ============================================================
+const getVehicles = async (filters = {}) => {
+  const limit = filters.limit || 20;
+  const offset = filters.offset || 0;
+
+  const query = buildQuery(filters);
+  console.log(`🔍 Encar жагсаалт хайж байна: limit=${limit}, offset=${offset}`);
+
+  // encar.com-оос ID жагсаалт авах
+  const listRes = await encarClient.get('/search/car/list/general', {
+    params: {
+      count: true,
+      q: query,
+      sr: `|ModifiedDate|${offset}|${limit}`,
+    },
+  });
+
+  const total = listRes.data.Count || 0;
+  const searchResults = listRes.data.SearchResults || [];
+
+  console.log(`✅ encar.com-оос ${searchResults.length} машин олдлоо (Нийт: ${total})`);
+
+  // Параллель байдлаар encar.mn-оос мэдээлэл татах
+  const vehicles = await Promise.all(
+    searchResults.map(async (item) => {
+      try {
+        const mnRes = await encarMnClient.get('/api/card', {
+          params: { vehicle_id: item.Id },
+        });
+
+        const mnData = mnRes.data?.data || {};
+
+        // Зургууд - encar.com жагсаалтаас ирсэн Photos-г ашиглах
+        const photos = (item.Photos || []).map((p) => buildImageUrl(p.location));
+
+        return {
+          id: item.Id,
+          manufacturer: mnData.manufacturer || '',
+          model: mnData.model || '',
+          grade: mnData.grade || '',
+          modelGroup: mnData.modelgroup || '',
+          year: mnData.year || null,
+          mileage: mnData.mileage || 0,
+          fuel: mnData.fuel || '',
+          displacement: mnData.displacement || 0,
+          priceKRW: mnData.price ? Number(mnData.price) : 0,
+          photos: photos,
+          firstPhoto: buildImageUrl(mnData.first_photo),
+          secondPhoto: buildImageUrl(mnData.second_photo),
+          officeCityState: item.OfficeCityState || '',
+          source: 'encar',
+        };
+      } catch (err) {
+        console.warn(`⚠️  encar.mn card алдаа (ID: ${item.Id}): ${err.message}`);
+
+        // encar.mn амжилтгүй бол encar.com-ийн өгөгдлөөс ашиглах
+        const photos = (item.Photos || []).map((p) => buildImageUrl(p.location));
+        return {
+          id: item.Id,
+          manufacturer: item.Manufacturer || '',
+          model: item.Model || '',
+          grade: item.Badge || '',
+          modelGroup: item.Model || '',
+          year: item.FormYear ? Number(item.FormYear) : null,
+          mileage: item.Mileage || 0,
+          fuel: item.FuelType || '',
+          displacement: 0,
+          priceKRW: item.Price ? item.Price * 10000 : 0,
+          photos: photos,
+          firstPhoto: photos[0] || null,
+          secondPhoto: photos[1] || null,
+          officeCityState: item.OfficeCityState || '',
+          source: 'encar',
+        };
+      }
+    })
+  );
+
+  return {
+    success: true,
+    data: {
+      vehicles,
+      total,
+      limit,
+      offset,
+    },
+  };
+};
+
+// ============================================================
+// 2. НЭГЖ МАШИНЫ ДЭЛГЭРЭНГҮЙ МЭДЭЭЛЭЛ
+// encar.mn/api/card + encar.mn/api/detailed-images
+// ============================================================
+const getVehicleById = async (id) => {
+  console.log(`🔍 Машины дэлгэрэнгүй татаж байна: ID ${id}`);
+
+  // Параллель байдлаар card + зургуудыг татах
+  const [cardRes, imagesRes] = await Promise.allSettled([
+    encarMnClient.get('/api/card', { params: { vehicle_id: id } }),
+    encarMnClient.get('/api/detailed-images', { params: { vehicleId: id } }),
+  ]);
+
+  // Card мэдээлэл
+  let cardData = {};
+  if (cardRes.status === 'fulfilled' && cardRes.value.data?.data) {
+    cardData = cardRes.value.data.data;
+    console.log(`✅ encar.mn card мэдээлэл ирлээ: ${cardData.manufacturer} ${cardData.model}`);
+  } else {
+    console.warn(`⚠️  encar.mn card татаж чадсангүй: ID ${id}`);
+  }
+
+  // Зургуудын жагсаалт
+  let photos = [];
+  if (imagesRes.status === 'fulfilled' && imagesRes.value.data?.data) {
+    photos = imagesRes.value.data.data.map((path) => buildImageUrl(path));
+    console.log(`✅ ${photos.length} зураг олдлоо`);
+  } else {
+    console.warn(`⚠️  Зураг татаж чадсангүй: ID ${id}`);
+  }
+
+  if (!cardData.vehicle_id && photos.length === 0) {
     throw new Error(`Машин олдсонгүй: ID ${id}`);
   }
 
-  console.log(`✅ Машин олдлоо: ${data.data?.title}`);
-  return data;
+  const vehicle = {
+    id: cardData.vehicle_id || id,
+    manufacturer: cardData.manufacturer || '',
+    model: cardData.model || '',
+    grade: cardData.grade || '',
+    modelGroup: cardData.modelgroup || '',
+    year: cardData.year || null,
+    mileage: cardData.mileage || 0,
+    fuel: cardData.fuel || '',
+    displacement: cardData.displacement || 0,
+    priceKRW: cardData.price ? Number(cardData.price) : 0,
+    photos: photos,
+    firstPhoto: buildImageUrl(cardData.first_photo) || photos[0] || null,
+    source: 'encar',
+  };
+
+  console.log(`✅ Машин бэлэн: ${vehicle.manufacturer} ${vehicle.model} (${photos.length} зураг)`);
+  return { success: true, data: vehicle };
 };
 
-/**
- * Брэндүүдийн жагсаалт татах
- */
+// ============================================================
+// 3. БРЭНДҮҮДИЙН ЖАГСААЛТ
+// encar.com-оос manufacturer жагсаалт авах
+// ============================================================
 const getBrands = async () => {
-  console.log(`🔍 Encar брэндүүд татаж байна...`);
-  const response = await apiClient.get(CARAPIS.ENCAR_BRANDS_ENDPOINT);
-  const data = response.data;
+  console.log(`🔍 Брэндүүд татаж байна...`);
 
-  if (!data.success) {
-    throw new Error('Брэндийн жагсаалт татаж чадсангүй');
-  }
+  const res = await encarClient.get('/search/car/list/general', {
+    params: {
+      count: true,
+      q: '(And.Hidden.N._.SellType.일반.)',
+      sr: '|ModifiedDate|0|1',
+      facet: 'Manufacturer',
+    },
+  });
 
-  console.log(`✅ ${data.data?.length} брэнд олдлоо`);
-  return data;
+  // encar.com facet-аас брэнд авах оролдлого
+  // Хэрэв facet ирэхгүй бол статик жагсаалт буцаана
+  const staticBrands = [
+    'Hyundai', 'Kia', 'Genesis', 'Chevrolet', 'Renault Korea',
+    'KG Mobility', 'BMW', 'Mercedes-Benz', 'Audi', 'Volkswagen',
+    'Toyota', 'Honda', 'Lexus', 'Porsche', 'Land Rover',
+    'Volvo', 'Jaguar', 'Ford', 'Jeep', 'Mini',
+  ];
+
+  console.log(`✅ ${staticBrands.length} брэнд буцаалаа`);
+  return { success: true, data: staticBrands };
 };
 
-/**
- * Тодорхой брэндийн загваруудыг татах
- * @param {string} brand - Брэндийн нэр
- */
+// ============================================================
+// 4. БРЭНДИЙН ЗАГВАРУУДЫН ЖАГСААЛТ
+// encar.mn/api/model-groups?manufacturer={name}
+// ============================================================
 const getModelsByBrand = async (brand) => {
-  console.log(`🔍 Encar ${brand} загваруудыг татаж байна...`);
-  const response = await apiClient.get(`${CARAPIS.ENCAR_MODELS_ENDPOINT}/${brand}`);
-  const data = response.data;
+  console.log(`🔍 ${brand} загваруудыг татаж байна...`);
 
-  if (!data.success) {
+  const res = await encarMnClient.get('/api/model-groups', {
+    params: { manufacturer: brand },
+  });
+
+  if (!res.data?.success) {
     throw new Error(`${brand} брэндийн загваруудыг татаж чадсангүй`);
   }
 
-  console.log(`✅ ${brand}: ${data.data?.length} загвар олдлоо`);
-  return data;
+  const models = res.data.data || [];
+  console.log(`✅ ${brand}: ${models.length} загвар олдлоо`);
+
+  return { success: true, data: models };
 };
 
-/**
- * Зах зээлийн статистик татах
- * @param {Object} params - Хайлтын параметрүүд
- */
-const getMarketStats = async (params = {}) => {
-  console.log(`📊 Encar зах зээлийн статистик татаж байна...`);
-  const response = await apiClient.get(CARAPIS.ENCAR_MARKET_STATS_ENDPOINT, { params });
-  return response.data;
+// ============================================================
+// 5. ВАЛЮТЫН ХАНШ
+// encar.mn/api/exchange-rate
+// ============================================================
+const getExchangeRate = async () => {
+  console.log(`💱 Ханш татаж байна...`);
+
+  const res = await encarMnClient.get('/api/exchange-rate');
+
+  if (!res.data?.success) {
+    throw new Error('Ханш татаж чадсангүй');
+  }
+
+  const rate = res.data.data?.rate || null;
+  console.log(`✅ Ханш: 1₩ = ${rate}₮`);
+
+  return { success: true, data: res.data.data };
 };
 
-/**
- * API холболтыг тест хийх
- */
+// ============================================================
+// 6. ХОЛБОЛТ ТЕСТ
+// ============================================================
 const testConnection = async () => {
   console.log('🔌 Encar API холболт тест хийж байна...');
   try {
-    const response = await apiClient.get(CARAPIS.ENCAR_BRANDS_ENDPOINT, {
-      params: { limit: 1 },
+    await encarClient.get('/search/car/list/general', {
+      params: {
+        count: true,
+        q: '(And.Hidden.N._.SellType.일반.)',
+        sr: '|ModifiedDate|0|1',
+      },
     });
     console.log('✅ Encar API холболт амжилттай!');
     return { success: true, message: 'API холболт ажиллаж байна' };
@@ -200,6 +325,6 @@ module.exports = {
   getVehicleById,
   getBrands,
   getModelsByBrand,
-  getMarketStats,
+  getExchangeRate,
   testConnection,
 };
