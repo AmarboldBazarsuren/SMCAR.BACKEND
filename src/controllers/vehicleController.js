@@ -2,8 +2,9 @@
  * SMCar.mn Vehicle Controller (Public)
  * Файл: backend/src/controllers/vehicleController.js
  *
- * Засвар: fuelType-г taxService-д дамжуулдаг болгосон
- * Засвар: priceKRW тооцооллыг зөв хийдэг болгосон
+ * Нэмэгдсэн:
+ * - getBrandStats: Брэнд + загварын статистик (cache-с)
+ * - forceRefreshCache: Admin хүчээр cache шинэчлэх
  */
 
 const encarService = require('../services/encarService');
@@ -11,6 +12,7 @@ const taxService = require('../services/taxService');
 const ManualVehicle = require('../models/ManualVehicle');
 const Banner = require('../models/Banner');
 const PricingConfig = require('../models/PricingConfig');
+const VehicleCache = require('../models/VehicleCache');
 
 // ============================================================
 // GET /api/vehicles
@@ -22,8 +24,6 @@ const getEncarVehicles = async (req, res) => {
       year_min, year_max, price_min, price_max,
       fuelType, limit = 20, offset = 0,
     } = req.query;
-
-    console.log(`🔍 Машин хайлт: manufacturer=${manufacturer}, modelGroup=${modelGroup}, model=${model}, limit=${limit}, offset=${offset}`);
 
     const data = await encarService.getVehicles({
       manufacturer, modelGroup, model,
@@ -42,7 +42,8 @@ const getEncarVehicles = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      source: 'apicars',
+      source: data.fromCache ? 'cache' : 'apicars',
+      fromCache: data.fromCache || false,
       count: vehicles.length,
       total: data.data?.total || 0,
       limit: Number(limit),
@@ -66,13 +67,10 @@ const getEncarVehicles = async (req, res) => {
 const getEncarVehicleDetail = async (req, res) => {
   const { id } = req.params;
   try {
-    console.log(`🔍 Машин дэлгэрэнгүй + татвар: ID ${id}`);
-
     const data = await encarService.getVehicleById(id);
     const vehicle = data.data;
     if (!vehicle) return res.status(404).json({ success: false, message: 'Машин олдсонгүй' });
 
-    // Татвар тооцоолох — displacement болон fuelType дамжуулна
     let pricing = null;
     if (vehicle.priceKRW && vehicle.year && vehicle.displacement) {
       try {
@@ -80,25 +78,17 @@ const getEncarVehicleDetail = async (req, res) => {
           priceKRW: vehicle.priceKRW,
           year: vehicle.year,
           engineCC: vehicle.displacement,
-          fuelType: vehicle.fuelType || vehicle.fuel || 'Gasoline',
+          fuelType: vehicle.fuelType || 'Бензин',
         });
       } catch (taxErr) {
         console.warn(`⚠️  Татвар тооцоолоход алдаа: ${taxErr.message}`);
       }
-    } else {
-      console.warn(
-        `⚠️  Татвар тооцоолох мэдээлэл дутуу: priceKRW=${vehicle.priceKRW}, year=${vehicle.year}, displacement=${vehicle.displacement}`
-      );
     }
 
     res.status(200).json({ success: true, source: 'apicars', data: vehicle, pricing });
   } catch (error) {
     console.error(`❌ GetEncarVehicleDetail алдаа: ${error.message}`);
-    res.status(500).json({
-      success: false,
-      message: 'Машины мэдээлэл татаж чадсангүй',
-      detail: process.env.NODE_ENV === 'development' ? error.message : undefined,
-    });
+    res.status(500).json({ success: false, message: 'Машины мэдээлэл татаж чадсангүй' });
   }
 };
 
@@ -116,7 +106,6 @@ const getManualVehicles = async (req, res) => {
       ManualVehicle.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
       ManualVehicle.countDocuments(filter),
     ]);
-    console.log(`✅ Гараар нэмсэн машин: ${vehicles.length} (Нийт: ${total})`);
 
     res.status(200).json({
       success: true,
@@ -128,7 +117,6 @@ const getManualVehicles = async (req, res) => {
       data: vehicles,
     });
   } catch (error) {
-    console.error(`❌ GetManualVehicles алдаа: ${error.message}`);
     res.status(500).json({ success: false, message: 'Машинуудыг татаж чадсангүй' });
   }
 };
@@ -147,7 +135,7 @@ const getManualVehicleDetail = async (req, res) => {
         priceKRW: vehicle.priceKRW,
         year: vehicle.year,
         engineCC: vehicle.engineCC,
-        fuelType: vehicle.fuelType || 'Gasoline',
+        fuelType: vehicle.fuelType || 'Бензин',
       });
     } catch (taxErr) {
       console.warn(`⚠️  Татвар: ${taxErr.message}`);
@@ -184,6 +172,31 @@ const getModels = async (req, res) => {
 };
 
 // ============================================================
+// ⭐ GET /api/vehicles/brand-stats — Нүүр хуудасны брэнд жагсаалт
+// Cache-с брэнд + загварын тоог авна
+// ============================================================
+const getBrandStats = async (req, res) => {
+  try {
+        const { getBrandStats: getCachedStats } = require('../services/cacheService');
+    const stats = await getCachedStats();
+
+    if (data.success && data.data) {
+      res.status(200).json({ success: true, fromCache: true, data: data.data });
+    } else {
+      // Cache байхгүй бол хоосон буцаана (background-д шинэчлэгдэнэ)
+      res.status(200).json({
+        success: true,
+        fromCache: false,
+        data: null,
+        message: 'Cache шинэчлэгдэж байна, хэсэг хүлээгээд дахин оролдоорой',
+      });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Брэндийн статистик татаж чадсангүй' });
+  }
+};
+
+// ============================================================
 // GET /api/exchange-rate
 // ============================================================
 const getExchangeRate = async (req, res) => {
@@ -208,7 +221,7 @@ const calculatePrice = async (req, res) => {
       priceKRW: Number(priceKRW),
       year: Number(year),
       engineCC: Number(engineCC),
-      fuelType: fuelType || 'Gasoline',
+      fuelType: fuelType || 'Бензин',
     });
     res.status(200).json({ success: true, data: result });
   } catch (error) {
@@ -233,17 +246,27 @@ const getActiveBanners = async (req, res) => {
 // ============================================================
 const healthCheck = async (req, res) => {
   const apiStatus = await encarService.testConnection();
+  const cacheStats = await VehicleCache.getStats().catch(() => null);
+
   res.status(200).json({
     success: true,
     message: 'SMCar.mn API ажиллаж байна',
     timestamp: new Date().toISOString(),
     vehicleAPI: apiStatus,
+    cache: cacheStats,
   });
 };
 
 module.exports = {
-  getEncarVehicles, getEncarVehicleDetail,
-  getManualVehicles, getManualVehicleDetail,
-  getBrands, getModels, getExchangeRate,
-  calculatePrice, getActiveBanners, healthCheck,
+  getEncarVehicles,
+  getEncarVehicleDetail,
+  getManualVehicles,
+  getManualVehicleDetail,
+  getBrands,
+  getModels,
+  getBrandStats,        // ⭐ Шинэ
+  getExchangeRate,
+  calculatePrice,
+  getActiveBanners,
+  healthCheck,
 };
