@@ -19,6 +19,7 @@ const getEncarVehicles = async (req, res) => {
     const {
       manufacturer,
       modelGroup,
+      model,         // ЗАСВАР: model параметр нэмэгдлээ
       year_min, year_max,
       price_min, price_max,
       fuelType,
@@ -26,10 +27,12 @@ const getEncarVehicles = async (req, res) => {
       offset = 0,
     } = req.query;
 
-    console.log(`🔍 Машин хайлт: manufacturer=${manufacturer}, limit=${limit}, offset=${offset}`);
+    console.log(`🔍 Машин хайлт: manufacturer=${manufacturer}, modelGroup=${modelGroup}, model=${model}, limit=${limit}, offset=${offset}`);
 
     const data = await encarService.getVehicles({
-      manufacturer, modelGroup,
+      manufacturer,
+      modelGroup,
+      model,         // ЗАСВАР: encarService-д дамжуулж байна
       year_min, year_max,
       price_min, price_max,
       fuelType,
