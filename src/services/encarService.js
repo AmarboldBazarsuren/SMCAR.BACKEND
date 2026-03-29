@@ -52,28 +52,75 @@ const toKRW = (price) => {
 // Загварын нэрээр CC хайх хүснэгт
 // ============================================================
 const MODEL_CC_MAP = {
+  // Hyundai
   'casper': 1000, 'venue': 1600, 'avante': 1600, 'i30': 1600,
   'kona': 1600, 'tucson': 2000, 'santa fe': 2500, 'santafe': 2500,
   'palisade': 2200, 'staria': 3500, 'porter': 2500,
   'grandeur': 2500, 'sonata': 2000,
   'ioniq5': 0, 'ioniq6': 0, 'ioniq9': 0, 'ioniq': 1600,
+  // Kia
   'ray': 1000, 'morning': 1000, 'picanto': 1000,
   'k3': 1600, 'k5': 2000, 'k8': 2500, 'k9': 3300,
   'seltos': 1600, 'sportage': 2000, 'sorento': 2200,
   'mohave': 3000, 'carnival': 3500, 'stonic': 1000,
   'niro': 1600, 'ev6': 0, 'ev9': 0,
+  // Genesis
   'g70': 2000, 'g80': 2500, 'g90': 3300,
-  'gv70': 2500, 'gv80': 2500,
+  'gv70': 2500, 'gv80': 2500, 'gv60': 0,
+  // BMW
   'x1': 1500, 'x2': 1500, 'x3': 2000, 'x4': 2000,
   'x5': 3000, 'x6': 3000, 'x7': 3000,
+  // Mercedes-Benz
   'glb': 1500, 'glc': 2000, 'gle': 3000, 'gls': 3000,
+  'gle300d': 2000, 'gle350': 3000, 'gle400': 3000, 'gle450': 3000,
+  'glb200': 1500, 'glc300': 2000, 'c200': 1500, 'c300': 2000,
+  'e200': 1500, 'e300': 2000, 'e400': 3000,
+  's350': 3000, 's450': 4000, 's500': 4700,
+  'cla': 1500, 'cls': 3000, 'slk': 1800,
+  // Audi
   'a3': 1400, 'a4': 2000, 'a5': 2000, 'a6': 2000,
   'a7': 2000, 'a8': 3000, 'q3': 1400, 'q5': 2000,
-  'q7': 3000, 'q8': 3000,
+  'q7': 3000, 'q8': 3000, 'e-tron': 0,
+  // Lexus
   'ux': 2000, 'nx': 2500, 'rx': 3500, 'lx': 3500,
-  'es': 2500, 'is': 2000, 'ls': 3500,
+  'es': 2500, 'is': 2000, 'ls': 3500, 'ux250h': 2000,
+  // Land Rover
+  'range rover': 3000, 'range rover sport': 3000,
+  'range rover velar': 2000, 'range rover evoque': 2000,
+  'defender': 3000, 'discovery': 3000, 'discovery sport': 2000,
+  'freelander': 2000,
+  // Volvo
+  'xc90': 2000, 'xc60': 2000, 'xc40': 1500,
+  's90': 2000, 's60': 2000, 'v90': 2000, 'v60': 2000,
+  // Porsche
+  'cayenne': 3000, 'macan': 2000, 'panamera': 3000,
+  'taycan': 0, 'cayman': 2500, 'boxster': 2500, '911': 3000,
+  // Mini
+  'cooper': 1500, 'countryman': 2000, 'clubman': 1500,
+  'paceman': 1500, 'coupe': 1500,
+  // Tesla
+  'model 3': 0, 'model s': 0, 'model x': 0, 'model y': 0,
+  // Chevrolet
+  'malibu': 1500, 'trax': 1400, 'equinox': 1500,
+  'traverse': 3600, 'spark': 1000, 'cruze': 1400,
+  // Toyota
+  'camry': 2500, 'corolla': 1600, 'rav4': 2000,
+  'highlander': 3500, 'prius': 1800, 'land cruiser': 4000,
+  // Honda
+  'civic': 1500, 'accord': 2000, 'cr-v': 1500,
+  'pilot': 3500, 'hrv': 1500, 'fit': 1300,
+  // Jeep
   'wrangler': 3600, 'gladiator': 3600, 'cherokee': 2400,
-  'compass': 2400, 'renegade': 1400,
+  'compass': 2400, 'renegade': 1400, 'grand cherokee': 3600,
+  // Ford
+  'mustang': 5000, 'explorer': 3500, 'f-150': 3500,
+  'bronco': 2700, 'ranger': 2300, 'edge': 2000,
+  // Renault
+  'qm6': 2000, 'sm6': 1600, 'xm3': 1300,
+  'arkana': 1300, 'master': 2300,
+  // Volkswagen
+  'golf': 1400, 'passat': 2000, 'tiguan': 2000,
+  'touareg': 3000, 'polo': 1000, 'arteon': 2000,
 };
 
 // ============================================================
@@ -88,23 +135,30 @@ const parseEngineCC = (car) => {
   const title = (car.title || '').toLowerCase();
   const model = (car.model || '').toLowerCase();
   const brand = (car.brand || car.manufacturer || '').toLowerCase();
+  const fullName = (brand + ' ' + model + ' ' + title).toLowerCase();
 
-  // 2. title-аас "2.2", "1.6", "3.5L" — заавал цэгтэй байх (700H гэх буруу match хийхгүй)
+  // 2. title-аас "2.2", "1.6", "3.5L", "P530" → cc
+  //    P530 = 5.3L = 5300cc гэх мэт Jaguar/Land Rover нэршил
+  const pMatch = title.match(/\bp(\d)(\d{2})\b/i);
+  if (pMatch) {
+    const cc = parseInt(pMatch[1] + pMatch[2]) * 100;
+    if (cc >= 600 && cc <= 8000) return cc;
+  }
+
+  // 3. "2.2", "1.6", "3.5L" — заавал цэгтэй байх
   const matchLiter = title.match(/\b(\d+\.\d+)\s*[lt]?\b/i);
   if (matchLiter) {
     const cc = Math.round(parseFloat(matchLiter[1]) * 1000);
     if (cc >= 600 && cc <= 8000) return cc;
   }
 
-  // 3. Загварын нэрийн хүснэгтээс хайх
-  const fullName = brand + ' ' + model + ' ' + title;
-  for (const [key, cc] of Object.entries(MODEL_CC_MAP)) {
-    if (fullName.includes(key)) return cc;
+  // 4. Загварын нэрийн хүснэгтээс хайх (урт нэрийг эхэлж шалга)
+  const sortedKeys = Object.keys(MODEL_CC_MAP).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (fullName.includes(key)) return MODEL_CC_MAP[key];
   }
 
-  // 4. BMW/Benz/Audi model code: "320i"→2000, "E250"→2500, "X5"→3000
-  //    BMW: 첫 숫자 series → 두 번째 숫자가 배기량 근사값
-  //    318/320/325/330 → 2000cc, 518/520 → 2000cc, 316 → 1600cc
+  // 5. BMW/Benz/Audi model code: "320i"→2000, "E250"→2500
   const bmwMap = {
     '1': 1500, '2': 1500, '3': 2000, '4': 2000,
     '5': 2000, '6': 3000, '7': 3000, '8': 3000,
@@ -112,12 +166,13 @@ const parseEngineCC = (car) => {
   const bmwMatch = model.match(/^(\d)(\d{2})[a-z]?$/i) ||
                    title.match(/\b(\d)(\d{2})[a-z]?\b/i);
   if (bmwMatch && bmwMap[bmwMatch[1]]) {
-    return bmwMap[bmwMatch[1]] * 1; // series → cc
+    return bmwMap[bmwMatch[1]];
   }
-  // Mercedes: E200/E250/C200 → series letter + cc
+
+  // 6. Mercedes: E200/E250/C200 → series letter + cc
   const benzMatch = model.match(/^[a-z](\d{3})[a-z]?$/i);
   if (benzMatch) {
-    const cc = parseInt(benzMatch[1]) * 1;
+    const cc = parseInt(benzMatch[1]);
     if (cc >= 150 && cc <= 600) return cc * 10;
   }
 
@@ -125,16 +180,20 @@ const parseEngineCC = (car) => {
 };
 
 // ============================================================
-// HELPER: fuelType стандартчилах
+// HELPER: fuelType монгол нэрсээр стандартчилах
 // ============================================================
 const normalizeFuelType = (fuel) => {
-  if (!fuel) return 'Gasoline';
-  const f = fuel.toLowerCase();
-  if (f.includes('diesel') || f.includes('дизел') || f === '디젤') return 'Diesel';
-  if (f.includes('electric') || f.includes('цахилгаан') || f === '전기') return 'Electric';
-  if (f.includes('hybrid') || f.includes('хибрид') || f === '하이브리드') return 'Hybrid';
-  if (f.includes('lpg') || f.includes('gas')) return 'LPG';
-  return 'Gasoline';
+  if (!fuel) return 'Бензин';
+  const f = fuel.toLowerCase().trim();
+
+  if (f.includes('diesel') || f.includes('дизел') || f === '디젤') return 'Дизель';
+  if (f === 'ev' || f.includes('electric') || f.includes('цахилгаан') || f === '전기') return 'Цахилгаан';
+  if (f === 'phev' || f === 'hev' || f.includes('hybrid') || f.includes('хибрид') || f === '하이브리드') return 'Хосолмол';
+  if (f.includes('lpg') || f.includes('lpi') || f === '가스' || f.includes('gas')) return 'Шингэрүүлсэн хий';
+  if (f.includes('hydrogen') || f === '수소') return 'Устөрөгч';
+  if (f.includes('gasoline') || f.includes('бензин') || f === '가솔린' || f === 'petrol') return 'Бензин';
+
+  return 'Бензин';
 };
 
 // ============================================================
@@ -183,7 +242,7 @@ const formatVehicle = (car) => {
   // Хөдөлгүүрийн хэмжээ
   const displacement = parseEngineCC(car);
 
-  // Түлшний төрөл
+  // Түлшний төрөл — монгол
   const fuelType = normalizeFuelType(car.fuelType || car.fuel_type || car.fuel);
 
   return {
@@ -195,8 +254,8 @@ const formatVehicle = (car) => {
     year: Number(car.year) || null,
     mileage: Number(car.mileage || car.km || 0),
     fuel: fuelType,
-    fuelType,                        // taxService-д ашиглахад хэрэгтэй
-    displacement,                    // taxService-д engineCC болгон ашиглана
+    fuelType,
+    displacement,
     priceKRW,
     priceDisplay: `₩${priceKRW.toLocaleString('ko-KR')}`,
     photos,
@@ -232,8 +291,11 @@ const getVehicles = async (filters = {}) => {
   if (filters.price_min) params.priceFrom = filters.price_min;
   if (filters.price_max) params.priceTo = filters.price_max;
   if (filters.fuelType) {
-    // Korean → English mapping
-    const fuelMap = { '가솔린': 'Gasoline', '디젤': 'Diesel', '전기': 'Electric', '하이브리드': 'Hybrid' };
+    // Korean → English mapping (API шүүлтүүрт)
+    const fuelMap = {
+      '가솔린': 'Gasoline', '디젤': 'Diesel',
+      '전기': 'Electric', '하이브리드': 'Hybrid',
+    };
     params.fuelType = fuelMap[filters.fuelType] || filters.fuelType;
   }
 

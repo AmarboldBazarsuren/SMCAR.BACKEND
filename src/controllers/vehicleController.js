@@ -177,13 +177,12 @@ const getModels = async (req, res) => {
 // ============================================================
 const getBrandStats = async (req, res) => {
   try {
-        const { getBrandStats: getCachedStats } = require('../services/cacheService');
-    const stats = await getCachedStats();
+    const { getBrandStats: getCachedStats } = require('../services/cacheService');
+    const stats = await getCachedStats();   // stats нь шууд data object эсвэл null
 
-    if (data.success && data.data) {
-      res.status(200).json({ success: true, fromCache: true, data: data.data });
+    if (stats) {
+      res.status(200).json({ success: true, fromCache: true, data: stats });
     } else {
-      // Cache байхгүй бол хоосон буцаана (background-д шинэчлэгдэнэ)
       res.status(200).json({
         success: true,
         fromCache: false,
