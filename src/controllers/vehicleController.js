@@ -3,13 +3,13 @@
  * Файл: backend/src/controllers/vehicleController.js
  *
  * Засвар:
- * - getEncarVehicles: Encar.com-оос шууд price авч priceMNT зөв тооцоолно
- * - getEncarVehicleDetail: Encar.com direct price ашиглана
+ * - getEncarVehicleDetail: Encar.com-с шууд үнэ, CC, түлш авна
+ *   apicars.info-н буруу өгөгдлийг бүгдийг override хийнэ
  */
 
 const encarService = require('../services/encarService');
 const taxService = require('../services/taxService');
-const { getEncarPrice, validateAndCorrectPrice } = require('../services/encarDirectService');
+const { getEncarCarDetail } = require('../services/encarDirectService');
 const ManualVehicle = require('../models/ManualVehicle');
 const Banner = require('../models/Banner');
 const PricingConfig = require('../models/PricingConfig');
@@ -64,45 +64,80 @@ const getEncarVehicles = async (req, res) => {
 
 // ============================================================
 // GET /api/vehicles/encar/:id
-// Encar.com-оос шууд зөв үнэ авна
+// Encar.com-оос шууд зөв үнэ, CC, түлш авна
 // ============================================================
 const getEncarVehicleDetail = async (req, res) => {
   const { id } = req.params;
   try {
+    // 1. apicars.info-с үндсэн мэдээлэл татах (зураг, загвар, он гэх мэт)
     const data = await encarService.getVehicleById(id);
     const vehicle = data.data;
     if (!vehicle) return res.status(404).json({ success: false, message: 'Машин олдсонгүй' });
 
-    // ============================================================
-    // Encar.com-оос шууд үнэ авах (apicars.info-н price буруу байж болно)
-    // ============================================================
-    let correctedPriceKRW = vehicle.priceKRW;
+    // 2. Encar.com-оос шууд үнэ, CC, түлш татах
     let priceSource = 'apicars';
+    let correctedPriceKRW = vehicle.priceKRW;
+    let correctedDisplacement = vehicle.displacement;
+    let correctedFuelType = vehicle.fuelType;
 
     try {
-      const encarPrice = await getEncarPrice(id);
-      if (encarPrice) {
-        if (vehicle.priceKRW) {
-          const diff = Math.abs(encarPrice - vehicle.priceKRW);
-          const diffPercent = (diff / encarPrice) * 100;
-          console.log(`📊 Үнэ зөрүү шалгалт ID=${id}: apicars=₩${vehicle.priceKRW?.toLocaleString()}, encar=₩${encarPrice.toLocaleString()}, зөрүү=${diffPercent.toFixed(1)}%`);
-          
-          if (diffPercent > 1) {
-            console.log(`✅ Encar.com-н зөв үнэ ашиглана: ₩${encarPrice.toLocaleString()}`);
-            priceSource = 'encar_direct';
+      const encarDetail = await getEncarCarDetail(id);
+
+      if (encarDetail) {
+        // ── Үнэ засах ──
+        if (encarDetail.priceKRW) {
+          const diff = vehicle.priceKRW
+            ? Math.abs(encarDetail.priceKRW - vehicle.priceKRW) / encarDetail.priceKRW * 100
+            : 100;
+          if (diff > 1 || !vehicle.priceKRW) {
+            console.log(`✅ Үнэ засав: ₩${vehicle.priceKRW?.toLocaleString()} → ₩${encarDetail.priceKRW.toLocaleString()} (${diff.toFixed(1)}% зөрүү)`);
+          }
+          correctedPriceKRW = encarDetail.priceKRW;
+          priceSource = 'encar_direct';
+        }
+
+        // ── CC засах ──
+        if (encarDetail.displacement && encarDetail.displacement > 0) {
+          console.log(`✅ CC засав: ${correctedDisplacement}cc → ${encarDetail.displacement}cc`);
+          correctedDisplacement = encarDetail.displacement;
+        } else {
+          // Encar.com API-с CC ирээгүй бол raw car объектоос өөр талбараас хайх
+          const rawCar = encarDetail.rawCar || {};
+          const fallbackCC = Number(
+            rawCar.spec?.displacement ||
+            rawCar.Spec?.Displacement ||
+            rawCar.vehicleSpec?.displacement ||
+            rawCar.CarSpec?.Displacement ||
+            0
+          );
+          if (fallbackCC > 0) {
+            console.log(`✅ CC (fallback) засав: ${correctedDisplacement}cc → ${fallbackCC}cc`);
+            correctedDisplacement = fallbackCC;
+          } else {
+            console.warn(`⚠️  Encar CC ирсэнгүй, apicars CC ашиглана: ${correctedDisplacement}cc`);
           }
         }
-        correctedPriceKRW = encarPrice;
+
+        // ── Түлш засах ──
+        if (encarDetail.fuelType) {
+          console.log(`✅ Түлш засав: "${correctedFuelType}" → "${encarDetail.fuelType}"`);
+          correctedFuelType = encarDetail.fuelType;
+        }
       }
-    } catch (priceErr) {
-      console.warn(`⚠️  Encar direct price алдаа: ${priceErr.message} — apicars үнэ ашиглана`);
+    } catch (encarErr) {
+      console.warn(`⚠️  Encar direct detail алдаа: ${encarErr.message} — apicars өгөгдөл ашиглана`);
     }
 
-    // Засварласан үнэ ашиглах
+    // 3. Засварласан утгуудыг vehicle объектод хадгалах
     vehicle.priceKRW = correctedPriceKRW;
+    vehicle.displacement = correctedDisplacement;
+    vehicle.fuelType = correctedFuelType;
+    vehicle.fuel = correctedFuelType;
     vehicle.priceSource = priceSource;
 
-    // Татвар тооцоолох
+    console.log(`📋 Эцсийн өгөгдөл: үнэ=₩${correctedPriceKRW?.toLocaleString()}, CC=${correctedDisplacement}cc, түлш=${correctedFuelType}`);
+
+    // 4. Татвар тооцоолох
     let pricing = null;
     if (vehicle.priceKRW && vehicle.year && vehicle.displacement) {
       try {
@@ -115,14 +150,16 @@ const getEncarVehicleDetail = async (req, res) => {
       } catch (taxErr) {
         console.warn(`⚠️  Татвар тооцоолоход алдаа: ${taxErr.message}`);
       }
+    } else {
+      console.warn(`⚠️  Татвар тооцоолох мэдээлэл дутуу: priceKRW=${vehicle.priceKRW}, year=${vehicle.year}, displacement=${vehicle.displacement}`);
     }
 
-    res.status(200).json({ 
-      success: true, 
-      source: 'apicars', 
+    res.status(200).json({
+      success: true,
+      source: 'apicars',
       priceSource,
-      data: vehicle, 
-      pricing 
+      data: vehicle,
+      pricing,
     });
   } catch (error) {
     console.error(`❌ GetEncarVehicleDetail алдаа: ${error.message}`);

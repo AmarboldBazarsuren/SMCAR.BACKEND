@@ -1,10 +1,10 @@
 /**
- * SMCar.mn Encar Direct Price Service
+ * SMCar.mn Encar Direct Service
  * Файл: backend/src/services/encarDirectService.js
- * 
- * Үүрэг: Encar.com-оос шууд машины үнэ татах
- * apicars.info-н price буруу байх тохиолдолд энийг ашиглана
- * 
+ *
+ * Үүрэг: Encar.com-оос шууд машины үнэ, CC, түлш татах
+ * apicars.info-н өгөгдөл буруу байх тохиолдолд энийг ашиглана
+ *
  * Encar.com public API:
  * https://api.encar.com/search/car/list/premium?count=true&q=(Id:41275232)
  */
@@ -12,87 +12,157 @@
 const axios = require('axios');
 
 // In-memory cache (5 минут)
-const priceCache = new Map();
+const detailCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
 
 const encarPublicClient = axios.create({
   baseURL: 'https://api.encar.com',
   headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Referer': 'https://www.encar.com/',
-    'Accept': 'application/json',
+    'Accept': 'application/json, text/plain, */*',
+    'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+    'Origin': 'https://www.encar.com',
   },
-  timeout: 10000,
+  timeout: 12000,
 });
 
 /**
- * Encar.com-оос машины үнэ шууд авах
- * @param {string} carId - Encar car ID (жишээ: '41275232')
- * @returns {number|null} - KRW үнэ эсвэл null
+ * Түлшний төрлийг монголчлах
  */
-const getEncarPrice = async (carId) => {
+const FUEL_MAP = {
+  '가솔린': 'Бензин',
+  'gasoline': 'Бензин',
+  'petrol': 'Бензин',
+  '디젤': 'Дизель',
+  'diesel': 'Дизель',
+  '전기': 'Цахилгаан',
+  'electric': 'Цахилгаан',
+  '하이브리드': 'Хосолмол',
+  'hybrid': 'Хосолмол',
+  '가스': 'Шингэрүүлсэн хий',
+  'lpg': 'Шингэрүүлсэн хий',
+  'lpi': 'Шингэрүүлсэн хий',
+  '수소': 'Устөрөгч',
+  'hydrogen': 'Устөрөгч',
+};
+
+const normalizeFuel = (fuel) => {
+  if (!fuel) return null;
+  const key = fuel.toLowerCase().trim();
+  if (FUEL_MAP[key]) return FUEL_MAP[key];
+  // Агуулсан байвал хайх
+  if (key.includes('diesel') || key.includes('디젤')) return 'Дизель';
+  if (key.includes('electric') || key.includes('전기')) return 'Цахилгаан';
+  if (key.includes('hybrid') || key.includes('하이브리드')) return 'Хосолмол';
+  if (key.includes('lpg') || key.includes('lpi') || key.includes('가스')) return 'Шингэрүүлсэн хий';
+  if (key.includes('gasoline') || key.includes('가솔린') || key.includes('petrol')) return 'Бензин';
+  return null;
+};
+
+/**
+ * Encar.com-оос машины бүрэн мэдээлэл авах (үнэ, CC, түлш)
+ * @param {string} carId - Encar car ID
+ * @returns {{ priceKRW, displacement, fuelType } | null}
+ */
+const getEncarCarDetail = async (carId) => {
   if (!carId) return null;
 
   // Cache шалгах
-  const cached = priceCache.get(carId);
+  const cached = detailCache.get(carId);
   if (cached && Date.now() - cached.time < CACHE_TTL) {
-    console.log(`📦 Encar price cache HIT: ${carId} → ₩${cached.price?.toLocaleString()}`);
-    return cached.price;
+    console.log(`📦 Encar detail cache HIT: ${carId}`);
+    return cached.data;
   }
 
   try {
-    console.log(`🔍 Encar.com-оос үнэ татаж байна: ID ${carId}`);
-    
+    console.log(`🔍 Encar.com-оос машины мэдээлэл татаж байна: ID ${carId}`);
+
     const res = await encarPublicClient.get('/search/car/list/premium', {
       params: {
         count: true,
         q: `(Id:${carId})`,
         sr: '|ModifiedDate|0|1',
+        // Нэмэлт талбаруудыг авах
       }
     });
 
     const cars = res.data?.SearchResults;
     if (!cars || cars.length === 0) {
       console.warn(`⚠️  Encar: Машин олдсонгүй ID=${carId}`);
-      priceCache.set(carId, { price: null, time: Date.now() });
+      detailCache.set(carId, { data: null, time: Date.now() });
       return null;
     }
 
     const car = cars[0];
-    // Encar.com-н Price нь 만원 нэгжтэй (× 10,000 = KRW)
+    console.log(`🔬 Encar raw car object keys: ${Object.keys(car).join(', ')}`);
+    console.log(`🔬 Encar raw car sample:`, JSON.stringify(car, null, 2).substring(0, 800));
+
+    // Үнэ: Encar.com Price нь 만원 нэгжтэй (× 10,000 = KRW)
     const priceManwon = car.Price || car.price;
-    if (!priceManwon) {
-      console.warn(`⚠️  Encar: Үнэ олдсонгүй ID=${carId}`);
-      return null;
-    }
+    const priceKRW = priceManwon ? Math.round(Number(priceManwon) * 10000) : null;
 
-    const priceKRW = Math.round(Number(priceManwon) * 10000);
-    console.log(`✅ Encar.com үнэ: ID=${carId}, ${priceManwon}만원 = ₩${priceKRW.toLocaleString()}`);
+    // CC: Encar API-д Displacement эсвэл EngineCc байна
+    const displacement = Number(
+      car.Displacement ||
+      car.displacement ||
+      car.EngineCc ||
+      car.engineCc ||
+      car.EngineCapacity ||
+      car.engineCapacity ||
+      car.CubicCapacity ||
+      car.cc ||
+      0
+    ) || null;
 
-    priceCache.set(carId, { price: priceKRW, time: Date.now() });
-    return priceKRW;
+    // Түлш: FuelName эсвэл Fuel
+    const fuelRaw = car.FuelName || car.Fuel || car.FuelType || car.fuelType || car.fuel || '';
+    const fuelType = normalizeFuel(fuelRaw) || null;
+
+    const result = {
+      priceKRW,
+      displacement,
+      fuelType,
+      fuelRaw,
+      rawCar: car, // debug үед ашиглах
+    };
+
+    console.log(`✅ Encar.com мэдээлэл: ID=${carId}`);
+    console.log(`   Үнэ: ${priceManwon}만원 = ₩${priceKRW?.toLocaleString()}`);
+    console.log(`   CC: ${displacement}cc (raw: ${car.Displacement || car.EngineCc || 'N/A'})`);
+    console.log(`   Түлш: "${fuelRaw}" → "${fuelType}"`);
+
+    detailCache.set(carId, { data: result, time: Date.now() });
+    return result;
 
   } catch (err) {
-    console.warn(`⚠️  Encar.com үнэ татаж чадсангүй: ${err.message}`);
-    priceCache.set(carId, { price: null, time: Date.now() });
+    console.warn(`⚠️  Encar.com мэдээлэл татаж чадсангүй: ${err.message}`);
+    detailCache.set(carId, { data: null, time: Date.now() });
     return null;
   }
 };
 
 /**
- * apicars.info-н price-г validate хийж, Encar.com-тай харьцуулах
- * Хэрэв зөрүү их бол Encar.com-н үнийг ашиглана
- * 
- * @param {string} carId 
- * @param {number} apicarsPrice - apicars.info-аас ирсэн үнэ (KRW болгосны дараа)
- * @returns {number} - Зөв KRW үнэ
+ * Encar.com-оос зөвхөн үнэ авах (хуучин API-тай нийцтэй байхын тулд)
+ * @param {string} carId
+ * @returns {number|null}
+ */
+const getEncarPrice = async (carId) => {
+  const detail = await getEncarCarDetail(carId);
+  return detail?.priceKRW || null;
+};
+
+/**
+ * apicars.info-н өгөгдлийг Encar.com-тай харьцуулж засах
+ * @param {string} carId
+ * @param {number} apicarsPrice
+ * @returns {number}
  */
 const validateAndCorrectPrice = async (carId, apicarsPrice) => {
   try {
     const encarPrice = await getEncarPrice(carId);
-    
+
     if (!encarPrice) {
-      // Encar-аас татаж чадаагүй → apicars.info-н үнийг ашиглана
       console.log(`ℹ️  Encar үнэ байхгүй, apicars үнэ ашиглана: ₩${apicarsPrice?.toLocaleString()}`);
       return apicarsPrice;
     }
@@ -101,20 +171,13 @@ const validateAndCorrectPrice = async (carId, apicarsPrice) => {
 
     const diff = Math.abs(encarPrice - apicarsPrice);
     const diffPercent = (diff / encarPrice) * 100;
-    
-    console.log(`📊 Үнэ харьцуулалт ID=${carId}:`);
-    console.log(`   apicars: ₩${apicarsPrice.toLocaleString()}`);
-    console.log(`   Encar.com: ₩${encarPrice.toLocaleString()}`);
-    console.log(`   Зөрүү: ${diffPercent.toFixed(1)}%`);
 
-    // 2%-аас их зөрүүтэй бол Encar.com-н үнийг ашиглана
     if (diffPercent > 2) {
-      console.log(`   ⚠️  Зөрүү их (${diffPercent.toFixed(1)}%) → Encar.com үнэ ашиглана`);
+      console.log(`   ⚠️  Үнэ зөрүү (${diffPercent.toFixed(1)}%) → Encar.com үнэ ашиглана`);
       return encarPrice;
     }
 
-    return encarPrice; // Ямар ч тохиолдолд Encar.com-н үнэ илүү найдвартай
-    
+    return encarPrice;
   } catch (err) {
     console.warn(`⚠️  validateAndCorrectPrice алдаа: ${err.message}`);
     return apicarsPrice;
@@ -122,6 +185,7 @@ const validateAndCorrectPrice = async (carId, apicarsPrice) => {
 };
 
 module.exports = {
+  getEncarCarDetail,
   getEncarPrice,
   validateAndCorrectPrice,
 };
