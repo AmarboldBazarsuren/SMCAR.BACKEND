@@ -3,12 +3,18 @@
  * Файл: backend/src/services/encarService.js
  * API: apicars.info
  *
- * ЧУХАЛ: apicars.info price нь EUR (€) нэгжтэй биш,
- * Солонгос "만원" (10,000 KRW) нэгжтэй.
- * Жишээ: price="5950" → 5950 × 10,000 = 59,500,000₩ жинхэнэ KRW
+ * ЗАСВАР: toKRW функцийн логик сайжруулагдсан
+ * apicars.info-н price нь 만원 (10,000₩) нэгжтэй.
+ * Гэхдээ зарим машины price нь буруу байдаг тул
+ * detail хуудсанд Encar.com-оос шууд үнэ авна.
+ *
+ * PRICE НЭГЖ:
+ * - apicars.info price field → 만원 нэгж (× 10,000 = KRW)
+ * - Жишээ: price=3729 → 37,290,000₩
+ * - Энэ нь Encar.com-н үнэтэй ойролцоо боловч зөрүү гарч болно
  *
  * Response бүтэц:
- * { success: true, data: { cars: [...], pagination: {...}, apiLimits: {...} } }
+ * { success: true, data: { cars: [...], pagination: {...} } }
  */
 
 const axios = require('axios');
@@ -36,16 +42,29 @@ const apiCarsClient = axios.create({
 });
 
 // ============================================================
-// HELPER: price → жинхэнэ KRW (만원 × 10,000)
-// apicars.info price field нь 만원 нэгжтэй
+// HELPER: price → жинхэнэ KRW
+//
+// apicars.info-н price field нь 만원 нэгжтэй:
+// - price=3729 → 3729 × 10,000 = 37,290,000₩
+//
+// Validation:
+// - price < 100,000 → 만원 гэж үзнэ (× 10,000)
+// - price >= 100,000,000 → аль хэдийн бүрэн KRW (shrug, хэрэглэгдэхгүй)
+// - 100,000 <= price < 100,000,000 → шууд KRW (аль хэдийн хөрвүүлсэн)
 // ============================================================
 const toKRW = (price) => {
   if (!price) return 0;
   const num = Number(price);
-  if (isNaN(num)) return 0;
-  // Хэрэв 1,000,000-аас бага бол 만원 гэж үзэж × 10,000
-  // Хэрэв аль хэдийн том тоо бол (>= 1,000,000) шууд KRW гэж үзнэ
-  return num < 1000000 ? Math.round(num * 10000) : Math.round(num);
+  if (isNaN(num) || num <= 0) return 0;
+
+  // 만원 нэгж (10,000₩ нэгж): price 1-99,999 хооронд байвал
+  // Жишэ: 3729만원 = 37,290,000₩
+  if (num < 100000) {
+    return Math.round(num * 10000);
+  }
+
+  // Аль хэдийн бүрэн KRW (rare case)
+  return Math.round(num);
 };
 
 // ============================================================
@@ -127,7 +146,6 @@ const MODEL_CC_MAP = {
 // HELPER: title / model-оос engine displacement (cc) parse
 // ============================================================
 const parseEngineCC = (car) => {
-  // 1. Шууд field байвал
   const direct = car.engineSize || car.engine_size || car.displacement
                || car.engineCC || car.engine || car.engineVolume || car.cc;
   if (direct && Number(direct) > 100) return Number(direct);
@@ -137,39 +155,27 @@ const parseEngineCC = (car) => {
   const brand = (car.brand || car.manufacturer || '').toLowerCase();
   const fullName = (brand + ' ' + model + ' ' + title).toLowerCase();
 
-  // 2. title-аас "2.2", "1.6", "3.5L", "P530" → cc
-  //    P530 = 5.3L = 5300cc гэх мэт Jaguar/Land Rover нэршил
   const pMatch = title.match(/\bp(\d)(\d{2})\b/i);
   if (pMatch) {
     const cc = parseInt(pMatch[1] + pMatch[2]) * 100;
     if (cc >= 600 && cc <= 8000) return cc;
   }
 
-  // 3. "2.2", "1.6", "3.5L" — заавал цэгтэй байх
   const matchLiter = title.match(/\b(\d+\.\d+)\s*[lt]?\b/i);
   if (matchLiter) {
     const cc = Math.round(parseFloat(matchLiter[1]) * 1000);
     if (cc >= 600 && cc <= 8000) return cc;
   }
 
-  // 4. Загварын нэрийн хүснэгтээс хайх (урт нэрийг эхэлж шалга)
   const sortedKeys = Object.keys(MODEL_CC_MAP).sort((a, b) => b.length - a.length);
   for (const key of sortedKeys) {
     if (fullName.includes(key)) return MODEL_CC_MAP[key];
   }
 
-  // 5. BMW/Benz/Audi model code: "320i"→2000, "E250"→2500
-  const bmwMap = {
-    '1': 1500, '2': 1500, '3': 2000, '4': 2000,
-    '5': 2000, '6': 3000, '7': 3000, '8': 3000,
-  };
-  const bmwMatch = model.match(/^(\d)(\d{2})[a-z]?$/i) ||
-                   title.match(/\b(\d)(\d{2})[a-z]?\b/i);
-  if (bmwMatch && bmwMap[bmwMatch[1]]) {
-    return bmwMap[bmwMatch[1]];
-  }
+  const bmwMap = { '1': 1500, '2': 1500, '3': 2000, '4': 2000, '5': 2000, '6': 3000, '7': 3000, '8': 3000 };
+  const bmwMatch = model.match(/^(\d)(\d{2})[a-z]?$/i) || title.match(/\b(\d)(\d{2})[a-z]?\b/i);
+  if (bmwMatch && bmwMap[bmwMatch[1]]) return bmwMap[bmwMatch[1]];
 
-  // 6. Mercedes: E200/E250/C200 → series letter + cc
   const benzMatch = model.match(/^[a-z](\d{3})[a-z]?$/i);
   if (benzMatch) {
     const cc = parseInt(benzMatch[1]);
@@ -202,12 +208,10 @@ const normalizeFuelType = (fuel) => {
 const extractCars = (responseData) => {
   if (!responseData) return { cars: [], total: 0 };
 
-  // { success: true, data: { cars: [...], pagination: { total } } }
   const inner = responseData.data;
   if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
     if (inner.cars && Array.isArray(inner.cars)) {
       const total = inner.pagination?.total || inner.total || inner.cars.length;
-      console.log(`🔬 data keys: ${Object.keys(inner).join(', ')}`);
       return { cars: inner.cars, total };
     }
     if (Array.isArray(inner)) return { cars: inner, total: inner.length };
@@ -227,7 +231,6 @@ const extractCars = (responseData) => {
 const formatVehicle = (car) => {
   if (!car) return null;
 
-  // Зурагнууд
   let photos = [];
   if (Array.isArray(car.images) && car.images.length) photos = car.images;
   else if (Array.isArray(car.photos) && car.photos.length) photos = car.photos;
@@ -236,13 +239,8 @@ const formatVehicle = (car) => {
   else if (car.thumbnail) photos = [car.thumbnail];
   photos = photos.filter(Boolean);
 
-  // Үнэ: 만원 → жинхэнэ KRW
   const priceKRW = toKRW(car.price || car.priceKRW || car.Price || 0);
-
-  // Хөдөлгүүрийн хэмжээ
   const displacement = parseEngineCC(car);
-
-  // Түлшний төрөл — монгол
   const fuelType = normalizeFuelType(car.fuelType || car.fuel_type || car.fuel);
 
   return {
@@ -257,6 +255,7 @@ const formatVehicle = (car) => {
     fuelType,
     displacement,
     priceKRW,
+    priceRaw: car.price || car.Price, // Debug үед ашиглана
     priceDisplay: `₩${priceKRW.toLocaleString('ko-KR')}`,
     photos,
     firstPhoto: photos[0] || null,
@@ -291,7 +290,6 @@ const getVehicles = async (filters = {}) => {
   if (filters.price_min) params.priceFrom = filters.price_min;
   if (filters.price_max) params.priceTo = filters.price_max;
   if (filters.fuelType) {
-    // Korean → English mapping (API шүүлтүүрт)
     const fuelMap = {
       '가솔린': 'Gasoline', '디젤': 'Diesel',
       '전기': 'Electric', '하이브리드': 'Hybrid',
@@ -308,13 +306,12 @@ const getVehicles = async (filters = {}) => {
   try {
     const res = await apiCarsClient.get('/cars', { params });
 
-    // Debug: response бүтцийг нэг удаа харах
     if (process.env.NODE_ENV === 'development') {
-      const keys = Object.keys(res.data || {});
-      console.log(`🔬 apicars.info full response keys: ${JSON.stringify(keys)}`);
       const sample = res.data?.data?.cars?.[0];
       if (sample) {
-        console.log(`🔬 Response sample: ${JSON.stringify({ ...sample, images: sample.images?.slice(0,1) }).substring(0, 500)}`);
+        const priceRaw = sample.price || sample.Price;
+        const priceKRW = toKRW(priceRaw);
+        console.log(`🔬 Sample price: raw=${priceRaw} → KRW=${priceKRW.toLocaleString()} (${priceRaw}만원)`);
       }
     }
 
@@ -354,7 +351,7 @@ const getVehicleById = async (id) => {
 
     const vehicle = formatVehicle(raw);
     console.log(
-      `✅ ${vehicle.manufacturer} ${vehicle.model} | ₩${vehicle.priceKRW.toLocaleString()} | ${vehicle.displacement}cc | ${vehicle.photos.length} зураг`
+      `✅ ${vehicle.manufacturer} ${vehicle.model} | raw price=${raw.price || raw.Price} → ₩${vehicle.priceKRW?.toLocaleString()} | ${vehicle.displacement}cc`
     );
 
     const result = { success: true, data: vehicle };
@@ -406,7 +403,7 @@ const getModelsByBrand = async (brand) => {
 const getExchangeRate = async () => ({
   success: true,
   data: {
-    note: 'apicars.info price нь 만원 нэгжтэй (×10,000 = жинхэнэ KRW)',
+    note: 'apicars.info price нь 만원 нэгжтэй (×10,000 = жинхэнэ KRW). Detail хуудсанд Encar.com-оос шууд үнэ авна.',
     priceUnit: 'manwon',
     multiplier: 10000,
   },
@@ -421,7 +418,9 @@ const testConnection = async () => {
     const { cars, total } = extractCars(res.data);
     if (cars.length > 0) {
       const s = cars[0];
-      console.log(`🔬 Sample: ${s.title || s.brand} | price=${s.price} → KRW=${toKRW(s.price).toLocaleString()}`);
+      const priceRaw = s.price || s.Price;
+      const priceKRW = toKRW(priceRaw);
+      console.log(`🔬 Sample: ${s.title || s.brand} | raw price=${priceRaw} → ₩${priceKRW.toLocaleString()} (${priceRaw}만원)`);
     }
     return { success: true, message: `apicars.info ажиллаж байна. Нийт: ${total}` };
   } catch (error) {
@@ -429,4 +428,4 @@ const testConnection = async () => {
   }
 };
 
-module.exports = { getVehicles, getVehicleById, getBrands, getModelsByBrand, getExchangeRate, testConnection };
+module.exports = { getVehicles, getVehicleById, getBrands, getModelsByBrand, getExchangeRate, testConnection, toKRW };

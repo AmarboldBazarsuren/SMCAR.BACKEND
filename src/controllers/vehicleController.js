@@ -2,13 +2,14 @@
  * SMCar.mn Vehicle Controller (Public)
  * Файл: backend/src/controllers/vehicleController.js
  *
- * Нэмэгдсэн:
- * - getBrandStats: Брэнд + загварын статистик (cache-с)
- * - forceRefreshCache: Admin хүчээр cache шинэчлэх
+ * Засвар:
+ * - getEncarVehicles: Encar.com-оос шууд price авч priceMNT зөв тооцоолно
+ * - getEncarVehicleDetail: Encar.com direct price ашиглана
  */
 
 const encarService = require('../services/encarService');
 const taxService = require('../services/taxService');
+const { getEncarPrice, validateAndCorrectPrice } = require('../services/encarDirectService');
 const ManualVehicle = require('../models/ManualVehicle');
 const Banner = require('../models/Banner');
 const PricingConfig = require('../models/PricingConfig');
@@ -63,6 +64,7 @@ const getEncarVehicles = async (req, res) => {
 
 // ============================================================
 // GET /api/vehicles/encar/:id
+// Encar.com-оос шууд зөв үнэ авна
 // ============================================================
 const getEncarVehicleDetail = async (req, res) => {
   const { id } = req.params;
@@ -71,6 +73,36 @@ const getEncarVehicleDetail = async (req, res) => {
     const vehicle = data.data;
     if (!vehicle) return res.status(404).json({ success: false, message: 'Машин олдсонгүй' });
 
+    // ============================================================
+    // Encar.com-оос шууд үнэ авах (apicars.info-н price буруу байж болно)
+    // ============================================================
+    let correctedPriceKRW = vehicle.priceKRW;
+    let priceSource = 'apicars';
+
+    try {
+      const encarPrice = await getEncarPrice(id);
+      if (encarPrice) {
+        if (vehicle.priceKRW) {
+          const diff = Math.abs(encarPrice - vehicle.priceKRW);
+          const diffPercent = (diff / encarPrice) * 100;
+          console.log(`📊 Үнэ зөрүү шалгалт ID=${id}: apicars=₩${vehicle.priceKRW?.toLocaleString()}, encar=₩${encarPrice.toLocaleString()}, зөрүү=${diffPercent.toFixed(1)}%`);
+          
+          if (diffPercent > 1) {
+            console.log(`✅ Encar.com-н зөв үнэ ашиглана: ₩${encarPrice.toLocaleString()}`);
+            priceSource = 'encar_direct';
+          }
+        }
+        correctedPriceKRW = encarPrice;
+      }
+    } catch (priceErr) {
+      console.warn(`⚠️  Encar direct price алдаа: ${priceErr.message} — apicars үнэ ашиглана`);
+    }
+
+    // Засварласан үнэ ашиглах
+    vehicle.priceKRW = correctedPriceKRW;
+    vehicle.priceSource = priceSource;
+
+    // Татвар тооцоолох
     let pricing = null;
     if (vehicle.priceKRW && vehicle.year && vehicle.displacement) {
       try {
@@ -85,7 +117,13 @@ const getEncarVehicleDetail = async (req, res) => {
       }
     }
 
-    res.status(200).json({ success: true, source: 'apicars', data: vehicle, pricing });
+    res.status(200).json({ 
+      success: true, 
+      source: 'apicars', 
+      priceSource,
+      data: vehicle, 
+      pricing 
+    });
   } catch (error) {
     console.error(`❌ GetEncarVehicleDetail алдаа: ${error.message}`);
     res.status(500).json({ success: false, message: 'Машины мэдээлэл татаж чадсангүй' });
@@ -172,13 +210,12 @@ const getModels = async (req, res) => {
 };
 
 // ============================================================
-// ⭐ GET /api/vehicles/brand-stats — Нүүр хуудасны брэнд жагсаалт
-// Cache-с брэнд + загварын тоог авна
+// GET /api/vehicles/brand-stats
 // ============================================================
 const getBrandStats = async (req, res) => {
   try {
     const { getBrandStats: getCachedStats } = require('../services/cacheService');
-    const stats = await getCachedStats();   // stats нь шууд data object эсвэл null
+    const stats = await getCachedStats();
 
     if (stats) {
       res.status(200).json({ success: true, fromCache: true, data: stats });
@@ -263,7 +300,7 @@ module.exports = {
   getManualVehicleDetail,
   getBrands,
   getModels,
-  getBrandStats,        // ⭐ Шинэ
+  getBrandStats,
   getExchangeRate,
   calculatePrice,
   getActiveBanners,
